@@ -1,0 +1,12 @@
+[package]
+name = "porter-process"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "process"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2.189"
+sendfd = "0.4.4"

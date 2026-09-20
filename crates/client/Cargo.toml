@@ -1,0 +1,11 @@
+[package]
+name = "porter-client"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "client"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true

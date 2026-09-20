@@ -1,0 +1,13 @@
+[package]
+name = "porter-core"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "porter"
+path = "src/main.rs"
+
+[dependencies]
+passfd = "0.1.6"
+porter-process.workspace = true
+tokio.workspace = true

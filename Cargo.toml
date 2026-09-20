@@ -1,0 +1,13 @@
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.dependencies]
+porter-client = { version = "0.1.0", path = "crates/client" }
+porter-process = { version = "0.1.0", path = "crates/process" }
+porter-core = { version = "0.1.0", path = "crates/core" }
+tokio = { version = "1.53.1", features = ["full"] }
