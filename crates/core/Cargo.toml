@@ -8,6 +8,6 @@ name = "porter"
 path = "src/main.rs"
 
 [dependencies]
-passfd = "0.1.6"
+sendfd = { version = "0.4.4", features = ["tokio"] }
 porter-process.workspace = true
 tokio.workspace = true

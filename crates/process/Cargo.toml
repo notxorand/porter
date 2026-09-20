@@ -9,4 +9,5 @@ path = "src/main.rs"
 
 [dependencies]
 libc = "0.2.189"
-sendfd = "0.4.4"
+sendfd = { version = "0.4.4", features = ["tokio"] }
+tokio.workspace = true

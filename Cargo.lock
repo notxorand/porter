@@ -80,15 +80,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "passfd"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b332c50e4d07c0011fff51ea305374408319908908bc1dbed7a0ffaaf63a8151"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -105,8 +96,8 @@ dependencies = [
 name = "porter-core"
 version = "0.1.0"
 dependencies = [
- "passfd",
  "porter-process",
+ "sendfd",
  "tokio",
 ]
 
@@ -116,6 +107,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "sendfd",
+ "tokio",
 ]
 
 [[package]]
@@ -158,6 +150,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b183bfd5b1bc64ab0c1ef3ee06b008a9ef1b68a7d3a99ba566fbfe7a7c6d745b"
 dependencies = [
  "libc",
+ "tokio",
 ]
 
 [[package]]
