@@ -9,7 +9,7 @@ use std::{
 
 use sendfd::{RecvWithFd, SendWithFd};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
     net::{TcpStream, UnixListener, UnixStream},
     sync::Mutex,
 };
@@ -17,6 +17,7 @@ use tokio::{
 const SOCKET_PATH_CORE: &str = "/tmp/porter_c.sock";
 const SOCKET_PATH_HANDOFF: &str = "/tmp/porter_h.sock";
 const SOCKET_PATH_STATUS: &str = "/tmp/porter_s.sock";
+const UPSTREAM_ENDPOINT: &str = "127.0.0.1:4849";
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
@@ -24,9 +25,14 @@ extern "C" fn handle_sig_polite(_: libc::c_int) {
     SHUTDOWN.store(true, Ordering::Relaxed);
 }
 
-/// `Blue` is a process that has open sockets.
+/// The two connected sockets belonging to one proxy connection.
 ///
-/// `Green` is a process that takes over from `Blue`.
+/// The FD handoff order is `[inbound, outbound, inbound, outbound, ...]`.
+struct ProxySockets {
+    inbound: TcpStream,
+    outbound: TcpStream,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Process {
     Blue,
@@ -61,7 +67,7 @@ async fn run_blue() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let sockets = Arc::new(Mutex::new(Vec::<TcpStream>::new()));
+    let sockets = Arc::new(Mutex::new(Vec::<ProxySockets>::new()));
     let handoff_complete = Arc::new(AtomicBool::new(false));
     let sockets_for_core = Arc::clone(&sockets);
     let sockets_for_sender = Arc::clone(&sockets);
@@ -76,46 +82,43 @@ async fn run_blue() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
             };
+            println!("Blue received inbound fd from core: {fd}");
 
-            println!("Blue received fd from core: {fd}");
-
-            let std_stream = match unsafe { std::net::TcpStream::from_raw_fd(fd) } {
-                stream => stream,
-            };
-            if let Err(error) = std_stream.set_nonblocking(true) {
-                eprintln!("failed to configure core socket: {error}");
-                continue;
-            }
-            let reader = match std_stream.try_clone() {
-                Ok(reader) => reader,
-                Err(error) => {
-                    eprintln!("failed to clone core socket: {error}");
-                    continue;
-                }
-            };
-            let stream = match TcpStream::from_std(std_stream) {
+            let inbound = match tcp_stream_from_fd(fd) {
                 Ok(stream) => stream,
                 Err(error) => {
-                    eprintln!("failed to restore core socket: {error}");
+                    eprintln!("failed to restore inbound socket: {error}");
                     continue;
                 }
             };
-            let reader = match TcpStream::from_std(reader) {
-                Ok(reader) => reader,
+            let outbound = match TcpStream::connect(UPSTREAM_ENDPOINT).await {
+                Ok(stream) => stream,
                 Err(error) => {
-                    eprintln!("failed to restore core reader: {error}");
+                    eprintln!("failed to connect upstream {UPSTREAM_ENDPOINT}: {error}");
                     continue;
                 }
             };
 
-            sockets_for_core.lock().await.push(stream);
-
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(reader).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    println!("Blue Request: {line}");
+            let (inbound, inbound_reader) = match duplicate_tcp_stream(inbound) {
+                Ok(streams) => streams,
+                Err(error) => {
+                    eprintln!("failed to duplicate inbound socket: {error}");
+                    continue;
                 }
-            });
+            };
+            let (outbound, outbound_reader) = match duplicate_tcp_stream(outbound) {
+                Ok(streams) => streams,
+                Err(error) => {
+                    eprintln!("failed to duplicate outbound socket: {error}");
+                    continue;
+                }
+            };
+
+            sockets_for_core
+                .lock()
+                .await
+                .push(ProxySockets { inbound, outbound });
+            tokio::spawn(proxy(inbound_reader, outbound_reader, "Blue"));
         }
     });
 
@@ -126,12 +129,15 @@ async fn run_blue() -> Result<(), Box<dyn std::error::Error>> {
                     let mut sockets = sockets_for_sender.lock().await;
                     std::mem::take(&mut *sockets)
                 };
-                let fds = streams.iter().map(AsRawFd::as_raw_fd).collect::<Vec<_>>();
+                let fds = streams
+                    .iter()
+                    .flat_map(|proxy| [proxy.inbound.as_raw_fd(), proxy.outbound.as_raw_fd()])
+                    .collect::<Vec<_>>();
 
                 if let Err(error) = send_sockets(&fds).await {
                     eprintln!("failed to send sockets to Green: {error}");
                 } else {
-                    println!("sent {} sockets to Green", fds.len());
+                    println!("sent {} proxy socket descriptors to Green", fds.len());
                     if let Err(error) = notify_green().await {
                         eprintln!("failed to notify Green: {error}");
                     }
@@ -156,19 +162,27 @@ async fn run_blue() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_green() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let fds = receive_sockets(SOCKET_PATH_HANDOFF).await?;
-        receive_handoff_complete().await?;
-        println!("Green received {} handoff sockets", fds.len());
-
-        for fd in fds {
-            let stream = tcp_stream_from_fd(fd)?;
-
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stream).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    println!("Green Request: {line}");
-                }
-            });
+        if fds.len() % 2 != 0 {
+            return Err("received an incomplete proxy socket pair".into());
         }
+
+        receive_handoff_complete().await?;
+        println!("Green received {} proxy socket descriptors", fds.len());
+
+        for pair in fds.chunks_exact(2) {
+            let inbound = tcp_stream_from_fd(pair[0])?;
+            let outbound = tcp_stream_from_fd(pair[1])?;
+            tokio::spawn(proxy(inbound, outbound, "Green"));
+        }
+    }
+}
+
+async fn proxy(mut inbound: TcpStream, mut outbound: TcpStream, process: &'static str) {
+    match copy_bidirectional(&mut inbound, &mut outbound).await {
+        Ok((inbound_bytes, outbound_bytes)) => println!(
+            "{process} proxy closed: inbound={inbound_bytes} bytes, outbound={outbound_bytes} bytes"
+        ),
+        Err(error) => eprintln!("{process} proxy failed: {error}"),
     }
 }
 
@@ -176,6 +190,17 @@ fn tcp_stream_from_fd(fd: i32) -> Result<TcpStream, Box<dyn std::error::Error>> 
     let stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
     stream.set_nonblocking(true)?;
     Ok(TcpStream::from_std(stream)?)
+}
+
+fn duplicate_tcp_stream(
+    stream: TcpStream,
+) -> Result<(TcpStream, TcpStream), Box<dyn std::error::Error>> {
+    let std_stream = stream.into_std()?;
+    let reader = std_stream.try_clone()?;
+    Ok((
+        TcpStream::from_std(std_stream)?,
+        TcpStream::from_std(reader)?,
+    ))
 }
 
 async fn send_sockets(sockets: &[i32]) -> Result<(), Box<dyn std::error::Error>> {
@@ -196,7 +221,6 @@ async fn send_sockets(sockets: &[i32]) -> Result<(), Box<dyn std::error::Error>>
     if len != data.len() {
         return Err("did not send the socket payload".into());
     }
-
     Ok(())
 }
 
@@ -233,7 +257,7 @@ async fn receive_sockets(path: &str) -> Result<Vec<i32>, Box<dyn std::error::Err
     };
 
     let mut bytes = [0u8; 1024];
-    let mut fds = vec![0i32; 16];
+    let mut fds = vec![0i32; 64];
     let (_, fd_count) = loop {
         match stream.recv_with_fd(&mut bytes, &mut fds) {
             Ok(result) => break result,
