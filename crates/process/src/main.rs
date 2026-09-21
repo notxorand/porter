@@ -338,17 +338,22 @@ async fn run_green() -> Result<(), Box<dyn std::error::Error>> {
         let fd = receive_core_socket().await?;
         println!("Green received new inbound fd from core: {fd}");
 
-        match establish_tls_proxy(fd, &server_config, &client_config).await {
-            Ok((inbound, outbound)) => {
-                tokio::spawn(proxy_ktls(
-                    inbound,
-                    outbound,
-                    "Green",
-                    Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                ));
+        let server_config = Arc::clone(&server_config);
+        let client_config = Arc::clone(&client_config);
+        tokio::spawn(async move {
+            match establish_tls_proxy(fd, &server_config, &client_config).await {
+                Ok((inbound, outbound)) => {
+                    println!("Green established TLS proxy for core fd {fd}");
+                    tokio::spawn(proxy_ktls(
+                        inbound,
+                        outbound,
+                        "Green",
+                        Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+                    ));
+                }
+                Err(error) => eprintln!("Green failed to establish proxy for fd {fd}: {error}"),
             }
-            Err(error) => eprintln!("Green failed to establish proxy for fd {fd}: {error}"),
-        }
+        });
     }
 }
 
@@ -363,15 +368,20 @@ async fn establish_tls_proxy(
     let (_, inbound_tls_socket) = duplicate_tcp_stream(inbound)?;
     let (_, outbound_tls_socket) = duplicate_tcp_stream(outbound)?;
 
-    let inbound_tls = TlsAcceptor::from(Arc::clone(server_config))
-        .accept(CorkStream::new(inbound_tls_socket))
-        .await?;
+    let inbound_tls = tokio::time::timeout(
+        Duration::from_secs(10),
+        TlsAcceptor::from(Arc::clone(server_config)).accept(CorkStream::new(inbound_tls_socket)),
+    )
+    .await??;
     let inbound_tls = ktls::config_ktls_server(inbound_tls).await?;
 
     let server_name = ServerName::try_from("localhost")?;
-    let outbound_tls = TlsConnector::from(Arc::clone(client_config))
-        .connect(server_name, CorkStream::new(outbound_tls_socket))
-        .await?;
+    let outbound_tls = tokio::time::timeout(
+        Duration::from_secs(10),
+        TlsConnector::from(Arc::clone(client_config))
+            .connect(server_name, CorkStream::new(outbound_tls_socket)),
+    )
+    .await??;
     let outbound_tls = ktls::config_ktls_client(outbound_tls).await?;
 
     let (inbound_drained, inbound_socket) = inbound_tls.into_raw();
