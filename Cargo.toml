@@ -11,3 +11,4 @@ porter-client = { version = "0.1.0", path = "crates/client" }
 porter-process = { version = "0.1.0", path = "crates/process" }
 porter-core = { version = "0.1.0", path = "crates/core" }
 tokio = { version = "1.53.1", features = ["full"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "tls12", "std"] }

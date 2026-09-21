@@ -19,16 +19,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Listening on {TCP_ENDPOINT}");
 
         loop {
-            let (stream, _) = match listener.accept().await {
+            let (stream, peer) = match listener.accept().await {
                 Ok(connection) => connection,
                 Err(error) => {
                     eprintln!("failed to accept TCP connection: {error}");
                     continue;
                 }
             };
+            println!("Accepted TCP connection from {peer}; waiting for process consumer");
 
             if let Err(error) = send_sockets(&[stream.as_raw_fd()]).await {
-                eprintln!("failed to send socket to Blue: {error}");
+                eprintln!("failed to send socket to process: {error}");
+            } else {
+                println!("Delivered TCP connection from {peer} to process");
             }
         }
     });
@@ -39,7 +42,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn send_sockets(sockets: &[i32]) -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(SOCKET_PATH);
     let listener = UnixListener::bind(SOCKET_PATH)?;
-    let (stream, _) = listener.accept().await?;
+    println!("Core waiting for process consumer on {SOCKET_PATH}");
+    let (stream, peer) = listener.accept().await?;
+    println!("Core accepted process consumer {peer:?}");
     let data = [1u8];
     let len = loop {
         match stream.send_with_fd(&data, sockets) {
@@ -55,5 +60,6 @@ async fn send_sockets(sockets: &[i32]) -> Result<(), Box<dyn std::error::Error>>
         return Err("did not send the socket payload".into());
     }
 
+    println!("Core sent {} FD(s)", sockets.len());
     Ok(())
 }
