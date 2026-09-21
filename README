@@ -4,7 +4,7 @@ porter is a gateway experiment for passing around live sockets between processes
 
 ## usage
 
-generate a certificate and private key with `openssl`, in pem format, and include them in `./certs`.
+generate a certificate and private key with `openssl`, in pem format, and include them in `./certs`. naming convention: server.*.pem.
 
 start the porter server, which runs a shim on port `4848`:
 
