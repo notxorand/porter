@@ -1,3 +1,52 @@
 # porter
 
-porter is a gateway for passing around live sockets between processes.
+porter is a gateway experiment for passing around live sockets between processes. the porter is merely a shim that hands off connections to processes without dealing with any state.
+
+## usage
+
+generate a certificate and private key with `openssl`, in pem format, and include them in `./certs`.
+
+start the porter server, which runs a shim on port `4848`:
+
+```
+cargo run --bin porter
+```
+
+run the receiving client that receives on port `4849`:
+
+```
+cargo run --bin client -- receive
+```
+
+start both processes:
+
+```
+# for blue
+cargo run --bin process -- blue
+```
+
+```
+# for green
+cargo run --bin process -- green
+```
+
+execute the sending client:
+
+```
+cargo run --bin client -- send
+```
+
+watch as the TCP connection is passed from the sending client to the porter shim, which feeds the inbound FD to Blue.
+the Blue process terminates TLS and feeds the request to the receiving client.
+on SIGINT/SIGTERM, the Blue process passes the existing inbound/outbound FDs to the Green process. kTLS is used to preserve the TLS session state across the handoff.
+Green continues proxying existing connections and polls the shim for new connections.
+
+## dev environment
+
+I advice you set up direnv in order to use the Nix flake if you're on NixOS with LLD linking enabled.
+
+for your kernel, enable `tls`. in NixOS it's done via adding the following to your configuration:
+
+```
+boot.kernelModules = [ "tls" ];
+```
