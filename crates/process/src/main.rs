@@ -31,6 +31,10 @@ extern "C" fn handle_sig_polite(_: libc::c_int) {
     SHUTDOWN.store(true, Ordering::Relaxed);
 }
 
+fn is_shutting_down() -> bool {
+    SHUTDOWN.load(Ordering::Acquire)
+}
+
 /// The two connected sockets belonging to one proxy connection.
 ///
 /// The FD handoff order is `[inbound, outbound, inbound, outbound, ...]`.
@@ -141,7 +145,7 @@ async fn run_blue() -> Result<(), Box<dyn std::error::Error>> {
                 result = receive_core_socket() => match result {
                     Ok(fd) => fd,
                     Err(error) => {
-                        if SHUTDOWN.load(Ordering::Relaxed) {
+                        if is_shutting_down() {
                             break;
                         }
                         eprintln!("failed to receive socket from core: {error}");
@@ -149,10 +153,10 @@ async fn run_blue() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 },
                 _ = tokio::time::sleep(Duration::from_millis(100)),
-                    if SHUTDOWN.load(Ordering::Relaxed) => break,
+                    if is_shutting_down() => break,
             };
 
-            if SHUTDOWN.load(Ordering::Relaxed) {
+            if is_shutting_down() {
                 let _ = unsafe { std::net::TcpStream::from_raw_fd(fd) };
                 break;
             }
@@ -267,7 +271,7 @@ async fn run_blue() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         loop {
-            if SHUTDOWN.load(Ordering::Relaxed) {
+            if is_shutting_down() {
                 while !core_polling_stopped_for_sender.load(Ordering::Relaxed) {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
@@ -419,7 +423,7 @@ async fn proxy_ktls(
 }
 
 async fn wait_for_shutdown() {
-    while !SHUTDOWN.load(Ordering::Relaxed) {
+    while !is_shutting_down() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
